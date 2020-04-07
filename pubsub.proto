@@ -1,0 +1,68 @@
+syntax = "proto3";
+package io.crosstalk.pubsub;
+option go_package = ".;pubsub";
+
+message Message {
+    oneof payload {
+        Control control = 1;
+        Data data = 2;
+    }
+}
+
+message Control {
+    oneof payload {
+        Request request = 1;
+        Response response = 2;
+    }
+}
+
+message Data {
+    int64 nano_time = 1;
+    string channel = 2;
+    string from = 3;
+    oneof payload {
+        string text = 4;
+        bytes binary = 5;
+    }
+}
+
+message Request {
+    string id = 1;
+    oneof payload {
+        Subscribe subscribe = 2;
+        Unsubscribe unsubscribe = 3;
+        Publish publish = 4;
+    }
+}
+
+message Response {
+    string id = 1;
+    oneof payload {
+        Success success = 2;
+        Error error = 3;
+    }
+}
+
+message Success {    
+}
+
+message Error {
+    int32 code = 1;
+    string reason = 2;
+}
+
+message Subscribe {
+    string channel = 1;
+}
+
+message Unsubscribe {
+    string channel = 1;
+}
+
+message Publish {
+    string channel = 1;
+    oneof payload {
+        string text = 2;
+        bytes binary = 3;
+    }
+}
