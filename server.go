@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/crosstalkio/log"
+	api "github.com/crosstalkio/pubsub/api/pubsub"
 	"github.com/gorilla/websocket"
 	"github.com/mb0/glob"
 	"google.golang.org/protobuf/proto"
@@ -75,7 +76,7 @@ func (s *Server) Loop() {
 		switch mt {
 		case websocket.BinaryMessage:
 			s.Debugf("Read %d bytes binary message: %s", len(p), s.remoteAddr.String())
-			msg := &Message{}
+			msg := &api.Message{}
 			err := proto.Unmarshal(p, msg)
 			if err != nil {
 				s.Errorf("Failed to parse proto message: %s", err.Error())
@@ -98,12 +99,12 @@ func (s *Server) Loop() {
 	}
 }
 
-func (s *Server) handle(msg *Message) (*Message, error) {
+func (s *Server) handle(msg *api.Message) (*api.Message, error) {
 	switch v := msg.Payload.(type) {
-	case *Message_Control:
+	case *api.Message_Control:
 		ctl := v.Control
 		switch v := ctl.Payload.(type) {
-		case *Control_Request:
+		case *api.Control_Request:
 			req := v.Request
 			rid := req.GetId()
 			if rid == "" {
@@ -113,13 +114,13 @@ func (s *Server) handle(msg *Message) (*Message, error) {
 			}
 			s.Debugf("Handling request %s from %s", rid, s.remoteAddr.String())
 			switch v := req.Payload.(type) {
-			case *Request_Publish:
+			case *api.Request_Publish:
 				pub := v.Publish
-				return s.publish(rid, pub.GetChannel(), pub.GetPayload())
-			case *Request_Subscribe:
+				return s.publish(rid, pub)
+			case *api.Request_Subscribe:
 				sub := v.Subscribe
 				return s.subscribe(rid, sub.GetChannel())
-			case *Request_Unsubscribe:
+			case *api.Request_Unsubscribe:
 				uns := v.Unsubscribe
 				return s.unsubscribe(rid, uns.GetChannel())
 			default:
@@ -139,7 +140,7 @@ func (s *Server) handle(msg *Message) (*Message, error) {
 	}
 }
 
-func (s *Server) subscribe(id, ch string) (*Message, error) {
+func (s *Server) subscribe(id, ch string) (*api.Message, error) {
 	if id == "" {
 		return s.error(id, 400, "Missing request ID"), nil
 	}
@@ -185,7 +186,7 @@ func (s *Server) subscribe(id, ch string) (*Message, error) {
 			if err != nil {
 				break
 			}
-			msg := &Data{}
+			msg := &api.Data{}
 			err = proto.Unmarshal(data, msg)
 			if err != nil {
 				s.Errorf("Failed to unmarshal payload from backbone: %s", err.Error())
@@ -196,9 +197,9 @@ func (s *Server) subscribe(id, ch string) (*Message, error) {
 				s.Debugf("Skipping self-published message: %s", from)
 				continue
 			}
-			pmsg := &Message{
-				Payload: &Message_Data{
-					Data: &Data{
+			pmsg := &api.Message{
+				Payload: &api.Message_Data{
+					Data: &api.Data{
 						NanoTime: msg.GetNanoTime(),
 						Channel:  ch,
 						From:     from,
@@ -217,7 +218,7 @@ func (s *Server) subscribe(id, ch string) (*Message, error) {
 	return s.success(id), nil
 }
 
-func (s *Server) unsubscribe(id, ch string) (*Message, error) {
+func (s *Server) unsubscribe(id, ch string) (*api.Message, error) {
 	if id == "" {
 		return s.error(id, 400, "Missing request ID"), nil
 	}
@@ -238,39 +239,39 @@ func (s *Server) unsubscribe(id, ch string) (*Message, error) {
 	}
 }
 
-func (s *Server) publish(id, ch string, payload isPublish_Payload) (*Message, error) {
+func (s *Server) publish(id string, pub *api.Publish) (*api.Message, error) {
 	if id == "" {
 		return s.error(id, 400, "Missing request ID"), nil
 	}
-	if ch == "" {
+	if pub.Channel == "" {
 		return s.error(id, 400, "Missing channel to publish"), nil
 	}
-	if payload == nil {
+	if pub.Payload == nil {
 		return s.error(id, 400, "Missing payload to publish"), nil
 	}
-	msg := &Data{
+	msg := &api.Data{
 		NanoTime: time.Now().UnixNano(),
 		From:     s.Identity,
 	}
-	switch v := payload.(type) {
-	case *Publish_Text:
+	switch v := pub.GetPayload().(type) {
+	case *api.Publish_Text:
 		s.Debugf("Publishing %d bytes of text data from '%s': %s", len(v.Text), msg.From, s.remoteAddr.String())
-		msg.Payload = &Data_Text{Text: v.Text}
-	case *Publish_Binary:
+		msg.Payload = &api.Data_Text{Text: v.Text}
+	case *api.Publish_Binary:
 		s.Debugf("Publishing %d bytes of binary data from '%s': %s", len(v.Binary), msg.From, s.remoteAddr.String())
-		msg.Payload = &Data_Binary{Binary: v.Binary}
+		msg.Payload = &api.Data_Binary{Binary: v.Binary}
 	default:
-		err := fmt.Errorf("Unexpected type of Publish: %v", v)
+		err := fmt.Errorf("Unexpected type of Payload: %v", v)
 		s.Errorf(err.Error())
 		return nil, err
 	}
 	if s.perm != nil {
 		authz := false
-		s.Debugf("Checking publish permission: %s vs %v", ch, s.perm.Write)
+		s.Debugf("Checking publish permission: %s vs %v", pub.Channel, s.perm.Write)
 		for _, pattern := range s.perm.Write {
-			match, err := glob.Match(pattern, ch)
+			match, err := glob.Match(pattern, pub.Channel)
 			if err != nil {
-				s.Errorf("Failed to match '%s' vs '%s': %s", pattern, ch, err.Error)
+				s.Errorf("Failed to match '%s' vs '%s': %s", pattern, pub.Channel, err.Error)
 				return nil, err
 			}
 			if match {
@@ -279,7 +280,7 @@ func (s *Server) publish(id, ch string, payload isPublish_Payload) (*Message, er
 			}
 		}
 		if !authz {
-			msg := fmt.Sprintf("Unauthorized publish: %s", ch)
+			msg := fmt.Sprintf("Unauthorized publish: %s", pub.Channel)
 			s.Warningf(msg)
 			return s.error(id, 401, msg), nil
 		}
@@ -289,7 +290,7 @@ func (s *Server) publish(id, ch string, payload isPublish_Payload) (*Message, er
 		s.Errorf("Failed to marshal payload for backbone: %s", err.Error)
 		return nil, err
 	}
-	err = s.backbone.Publish(ch, data)
+	err = s.backbone.Publish(pub.Channel, data)
 	if err != nil {
 		s.Errorf("Failed to publish to backbone: %s", err.Error())
 		return s.error(id, 500, "%s", err.Error()), nil
@@ -297,7 +298,7 @@ func (s *Server) publish(id, ch string, payload isPublish_Payload) (*Message, er
 	return s.success(id), nil
 }
 
-func (s *Server) send(msg *Message) error {
+func (s *Server) send(msg *api.Message) error {
 	ctl := msg.GetControl()
 	if ctl != nil && ctl.GetResponse() != nil {
 		s.Debugf("Replying request %s from %s", ctl.GetResponse().GetId(), s.remoteAddr.String())
@@ -311,34 +312,34 @@ func (s *Server) send(msg *Message) error {
 	return nil
 }
 
-func (s *Server) control(ctl *Control) *Message {
-	return &Message{
-		Payload: &Message_Control{
+func (s *Server) control(ctl *api.Control) *api.Message {
+	return &api.Message{
+		Payload: &api.Message_Control{
 			Control: ctl,
 		},
 	}
 }
 
-func (s *Server) success(id string) *Message {
-	return s.control(&Control{
-		Payload: &Control_Response{
-			Response: &Response{
+func (s *Server) success(id string) *api.Message {
+	return s.control(&api.Control{
+		Payload: &api.Control_Response{
+			Response: &api.Response{
 				Id: id,
-				Payload: &Response_Success{
-					Success: &Success{},
+				Payload: &api.Response_Success{
+					Success: &api.Success{},
 				},
 			},
 		},
 	})
 }
 
-func (s *Server) error(id string, code int32, msg string, args ...interface{}) *Message {
-	return s.control(&Control{
-		Payload: &Control_Response{
-			Response: &Response{
+func (s *Server) error(id string, code int32, msg string, args ...interface{}) *api.Message {
+	return s.control(&api.Control{
+		Payload: &api.Control_Response{
+			Response: &api.Response{
 				Id: id,
-				Payload: &Response_Error{
-					Error: &Error{
+				Payload: &api.Response_Error{
+					Error: &api.Error{
 						Code:   code,
 						Reason: fmt.Sprintf(msg, args...),
 					},

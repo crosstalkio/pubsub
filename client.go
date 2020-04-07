@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/crosstalkio/log"
+	api "github.com/crosstalkio/pubsub/api/pubsub"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
@@ -24,7 +25,7 @@ type Client struct {
 	closed    bool
 	localAddr net.Addr
 	conn      *websocket.Conn
-	subs      map[string]func(*Data)
+	subs      map[string]func(*api.Data)
 	reqs      map[string]chan error
 	writer    *clientWriter
 }
@@ -33,7 +34,7 @@ func NewClient(logger log.Logger, u *url.URL) *Client {
 	return &Client{
 		Sugar: log.NewSugar(logger),
 		u:     u,
-		subs:  make(map[string]func(*Data)),
+		subs:  make(map[string]func(*api.Data)),
 		reqs:  make(map[string]chan error),
 	}
 }
@@ -85,11 +86,11 @@ func (c *Client) Close() error {
 
 func (c *Client) PublishText(ch, msg string) error {
 	c.Debugf("Publishing %d bytes text message to: %s", len(msg), ch)
-	return c.request(&Request{
-		Payload: &Request_Publish{
-			Publish: &Publish{
+	return c.request(&api.Request{
+		Payload: &api.Request_Publish{
+			Publish: &api.Publish{
 				Channel: ch,
-				Payload: &Publish_Text{Text: msg},
+				Payload: &api.Publish_Text{Text: msg},
 			},
 		},
 	})
@@ -97,22 +98,22 @@ func (c *Client) PublishText(ch, msg string) error {
 
 func (c *Client) PublishBinary(ch string, msg []byte) error {
 	c.Debugf("Publishing %d bytes binary message to: %s", len(msg), ch)
-	return c.request(&Request{
-		Payload: &Request_Publish{
-			Publish: &Publish{
+	return c.request(&api.Request{
+		Payload: &api.Request_Publish{
+			Publish: &api.Publish{
 				Channel: ch,
-				Payload: &Publish_Binary{Binary: msg},
+				Payload: &api.Publish_Binary{Binary: msg},
 			},
 		},
 	})
 }
 
-func (c *Client) Subscribe(ch string, cb func(*Data)) error {
+func (c *Client) Subscribe(ch string, cb func(*api.Data)) error {
 	c.Debugf("Subscribing: %s", ch)
 	c.subs[ch] = cb
-	return c.request(&Request{
-		Payload: &Request_Subscribe{
-			Subscribe: &Subscribe{
+	return c.request(&api.Request{
+		Payload: &api.Request_Subscribe{
+			Subscribe: &api.Subscribe{
 				Channel: ch,
 			},
 		},
@@ -121,16 +122,16 @@ func (c *Client) Subscribe(ch string, cb func(*Data)) error {
 
 func (c *Client) Unsubscribe(ch string) error {
 	c.Debugf("Unsubscribing: %s", ch)
-	return c.request(&Request{
-		Payload: &Request_Unsubscribe{
-			Unsubscribe: &Unsubscribe{
+	return c.request(&api.Request{
+		Payload: &api.Request_Unsubscribe{
+			Unsubscribe: &api.Unsubscribe{
 				Channel: ch,
 			},
 		},
 	})
 }
 
-func (c *Client) request(req *Request) error {
+func (c *Client) request(req *api.Request) error {
 	u, err := uuid.NewRandom()
 	if err != nil {
 		c.Errorf("Failed to create UUID: %s", err.Error())
@@ -141,10 +142,10 @@ func (c *Client) request(req *Request) error {
 	c.Debugf("Making request: %s", id)
 	resCh := make(chan error, 1)
 	c.reqs[id] = resCh
-	err = c.writer.write(&Message{
-		Payload: &Message_Control{
-			Control: &Control{
-				Payload: &Control_Request{Request: req},
+	err = c.writer.write(&api.Message{
+		Payload: &api.Message_Control{
+			Control: &api.Control{
+				Payload: &api.Control_Request{Request: req},
 			},
 		},
 	})
@@ -181,7 +182,7 @@ func (c *Client) loop(conn *websocket.Conn) {
 		switch mt {
 		case websocket.BinaryMessage:
 			c.Debugf("Received %d bytes websocket binary message: %s", len(p), c.localAddr.String())
-			msg := &Message{}
+			msg := &api.Message{}
 			err := proto.Unmarshal(p, msg)
 			if err != nil {
 				c.Errorf("Failed to parse proto message: %s", err.Error())
@@ -198,16 +199,16 @@ func (c *Client) loop(conn *websocket.Conn) {
 	}
 }
 
-func (c *Client) handle(msg *Message) error {
+func (c *Client) handle(msg *api.Message) error {
 	switch v := msg.Payload.(type) {
-	case *Message_Control:
+	case *api.Message_Control:
 		ctl := v.Control
 		switch v := ctl.Payload.(type) {
-		case *Control_Request:
+		case *api.Control_Request:
 			err := fmt.Errorf("Unexpected payload of Request")
 			c.Errorf(err.Error())
 			return err
-		case *Control_Response:
+		case *api.Control_Response:
 			res := v.Response
 			id := res.GetId()
 			if id == "" {
@@ -222,10 +223,10 @@ func (c *Client) handle(msg *Message) error {
 				return err
 			}
 			switch v := res.Payload.(type) {
-			case *Response_Success:
+			case *api.Response_Success:
 				c.Debugf("Request success: %s", id)
 				req <- nil
-			case *Response_Error:
+			case *api.Response_Error:
 				e := v.Error
 				err := fmt.Errorf("%d %s", e.GetCode(), e.GetReason())
 				c.Debugf("Request failed: %s", err.Error())
@@ -240,7 +241,7 @@ func (c *Client) handle(msg *Message) error {
 			c.Errorf(err.Error())
 			return err
 		}
-	case *Message_Data:
+	case *api.Message_Data:
 		data := v.Data
 		ch := data.GetChannel()
 		sub := c.subs[ch]
@@ -250,10 +251,10 @@ func (c *Client) handle(msg *Message) error {
 			return err
 		}
 		switch v := data.Payload.(type) {
-		case *Data_Text:
+		case *api.Data_Text:
 			txt := v.Text
 			c.Debugf("Dispatching %d bytes text data from: %s", len(txt), ch)
-		case *Data_Binary:
+		case *api.Data_Binary:
 			bin := v.Binary
 			c.Debugf("Dispatching %d bytes binary data from: %s", len(bin), ch)
 		default:

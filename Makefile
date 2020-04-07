@@ -1,4 +1,4 @@
-PROTOS := $(wildcard *.proto) $(wildcard */*.proto)
+PROTOS := $(wildcard *.proto) $(wildcard */*.proto) $(wildcard */*/*.proto)
 PBGO := $(PROTOS:.proto=.pb.go)
 
 all: $(PBGO)

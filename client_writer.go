@@ -2,12 +2,13 @@ package pubsub
 
 import (
 	"github.com/crosstalkio/log"
+	api "github.com/crosstalkio/pubsub/api/pubsub"
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
 )
 
 type clientWriteJob struct {
-	msg   *Message
+	msg   *api.Message
 	resCh chan error
 }
 
@@ -31,7 +32,7 @@ func (w *clientWriter) exit() {
 	w.exitCh <- true
 }
 
-func (w *clientWriter) write(msg *Message) error {
+func (w *clientWriter) write(msg *api.Message) error {
 	job := &clientWriteJob{
 		msg:   msg,
 		resCh: make(chan error, 1),
