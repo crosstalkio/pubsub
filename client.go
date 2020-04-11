@@ -25,16 +25,20 @@ type Client struct {
 	closed    bool
 	localAddr net.Addr
 	conn      *websocket.Conn
-	subs      map[string]func(*api.Data)
+	subs      map[string]func(*Data)
 	reqs      map[string]chan error
 	writer    *clientWriter
+}
+
+type Data struct {
+	*api.Data
 }
 
 func NewClient(logger log.Logger, u *url.URL) *Client {
 	return &Client{
 		Sugar: log.NewSugar(logger),
 		u:     u,
-		subs:  make(map[string]func(*api.Data)),
+		subs:  make(map[string]func(*Data)),
 		reqs:  make(map[string]chan error),
 	}
 }
@@ -108,7 +112,7 @@ func (c *Client) PublishBinary(ch string, msg []byte) error {
 	})
 }
 
-func (c *Client) Subscribe(ch string, cb func(*api.Data)) error {
+func (c *Client) Subscribe(ch string, cb func(*Data)) error {
 	c.Debugf("Subscribing: %s", ch)
 	c.subs[ch] = cb
 	return c.request(&api.Request{
@@ -262,7 +266,7 @@ func (c *Client) handle(msg *api.Message) error {
 			c.Errorf(err.Error())
 			return err
 		}
-		go sub(data)
+		go sub(&Data{data})
 	default:
 		err := fmt.Errorf("Unexpected type of Message: %v", v)
 		c.Errorf(err.Error())
