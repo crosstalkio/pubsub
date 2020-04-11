@@ -99,54 +99,6 @@ func (s *Server) Loop() {
 	}
 }
 
-func (s *Server) PublishText(as, ch, text string) error {
-	if ch == "" {
-		err := fmt.Errorf("Missing channel to publish")
-		s.Errorf("%s", err.Error())
-		return err
-	}
-	msg := &api.Data{
-		NanoTime: time.Now().UnixNano(),
-		From:     as,
-		Payload:  &api.Data_Text{Text: text},
-	}
-	data, err := proto.Marshal(msg)
-	if err != nil {
-		s.Errorf("Failed to marshal payload for backbone: %s", err.Error)
-		return err
-	}
-	err = s.backbone.Publish(ch, data)
-	if err != nil {
-		s.Errorf("Failed to publish to backbone: %s", err.Error())
-		return err
-	}
-	return nil
-}
-
-func (s *Server) PublishBinary(as, ch string, bin []byte) error {
-	if ch == "" {
-		err := fmt.Errorf("Missing channel to publish")
-		s.Errorf("%s", err.Error())
-		return err
-	}
-	msg := &api.Data{
-		NanoTime: time.Now().UnixNano(),
-		From:     as,
-		Payload:  &api.Data_Binary{Binary: bin},
-	}
-	data, err := proto.Marshal(msg)
-	if err != nil {
-		s.Errorf("Failed to marshal payload for backbone: %s", err.Error)
-		return err
-	}
-	err = s.backbone.Publish(ch, data)
-	if err != nil {
-		s.Errorf("Failed to publish to backbone: %s", err.Error())
-		return err
-	}
-	return nil
-}
-
 func (s *Server) handle(msg *api.Message) (*api.Message, error) {
 	switch v := msg.Payload.(type) {
 	case *api.Message_Control:
