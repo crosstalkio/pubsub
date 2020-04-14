@@ -152,6 +152,7 @@ func (b *backbone) receive() {
 		msg, err := b.pubsub.ReceiveMessage()
 		if err != nil {
 			b.Errorf("Failed to receive redis message: %s", err.Error())
+			break
 		} else {
 			b.msgCh <- msg
 		}
