@@ -6,7 +6,7 @@ import (
 
 	"github.com/crosstalkio/log"
 	"github.com/crosstalkio/pubsub"
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v7"
 )
 
 type backbone struct {
