@@ -14,9 +14,11 @@ tidy:
 lint: $(GOLANGCI_LINT)
 	$(realpath $(GOLANGCI_LINT)) run
 
-clean: clean/golangci-lint clean/protoc clean/protoc-gen-go
-	rm -f go.sum
+clean/proto:
 	rm -f $(PBGO)
+
+clean: clean/golangci-lint clean/protoc clean/protoc-gen-go clean/proto
+	rm -f go.sum
 
 test: # -count=1 disables cache
 	go test -v -race -count=1 .
