@@ -6,7 +6,7 @@ all: $(PBGO)
 
 include .make/golangci-lint.mk
 include .make/protoc.mk
-include .make/protoc-gen-go.mk
+include .make/grpc-go.mk
 
 tidy:
 	go mod tidy

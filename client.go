@@ -1,18 +1,13 @@
 package pubsub
 
 import (
-	"encoding/hex"
+	"context"
 	"fmt"
-	"net"
-	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/crosstalkio/log"
-	api "github.com/crosstalkio/pubsub/api/pubsub"
-	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
-	"google.golang.org/protobuf/proto"
+	"github.com/crosstalkio/pubsub/api"
+	"google.golang.org/grpc"
 )
 
 const (
@@ -21,256 +16,61 @@ const (
 
 type Client struct {
 	log.Sugar
-	u         *url.URL
-	closed    bool
-	localAddr net.Addr
-	conn      *websocket.Conn
-	subs      map[string]func(*Data)
-	reqs      map[string]chan error
-	writer    *clientWriter
+	conn *grpc.ClientConn
 }
 
 type Data struct {
 	*api.Data
 }
 
-func NewClient(logger log.Logger, u *url.URL) *Client {
+func NewClient(logger log.Logger, conn *grpc.ClientConn) *Client {
 	return &Client{
 		Sugar: log.NewSugar(logger),
-		u:     u,
-		subs:  make(map[string]func(*Data)),
-		reqs:  make(map[string]chan error),
+		conn:  conn,
 	}
-}
-
-func (c *Client) Dial(header http.Header) error {
-	c.Debugf("Dialing: %s", c.u.String())
-	conn, res, err := websocket.DefaultDialer.Dial(c.u.String(), header)
-	if err != nil {
-		if res != nil {
-			c.Errorf("Failed to dial: %s", res.Status)
-			return fmt.Errorf("%s", res.Status)
-		} else {
-			c.Errorf("Failed to dial: %s", err.Error())
-			return err
-		}
-	}
-	c.localAddr = conn.LocalAddr()
-	c.conn = conn
-	c.writer = newClientWriter(c, conn)
-	go c.writer.loop()
-	go c.loop(conn)
-	return nil
-}
-
-func (c *Client) Close() error {
-	if c.closed {
-		return nil
-	}
-	c.closed = true
-	err := fmt.Errorf("Closed")
-	for _, req := range c.reqs {
-		req <- err
-	}
-	c.reqs = make(map[string]chan error)
-	if c.writer != nil {
-		c.writer.exit()
-		c.writer = nil
-	}
-	if c.conn != nil {
-		err = c.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(3*time.Second))
-		if err != nil {
-			c.Warningf("Failed to write close: %s", err.Error())
-		}
-		c.conn.Close()
-		c.conn = nil
-	}
-	return nil
 }
 
 func (c *Client) PublishText(ch, msg string) error {
 	c.Debugf("Publishing %d bytes text message to: %s", len(msg), ch)
-	return c.request(&api.Request{
-		Payload: &api.Request_Publish{
-			Publish: &api.Publish{
-				Channel: ch,
-				Payload: &api.Publish_Text{Text: msg},
-			},
-		},
+	_, err := api.NewPubSubClient(c.conn).Publish(context.Background(), &api.PublishRequest{
+		Channel: ch,
+		Type:    &api.PublishRequest_Text{Text: msg},
 	})
+	return err
 }
 
 func (c *Client) PublishBinary(ch string, msg []byte) error {
 	c.Debugf("Publishing %d bytes binary message to: %s", len(msg), ch)
-	return c.request(&api.Request{
-		Payload: &api.Request_Publish{
-			Publish: &api.Publish{
-				Channel: ch,
-				Payload: &api.Publish_Binary{Binary: msg},
-			},
-		},
+	_, err := api.NewPubSubClient(c.conn).Publish(context.Background(), &api.PublishRequest{
+		Channel: ch,
+		Type:    &api.PublishRequest_Binary{Binary: msg},
 	})
+	return err
 }
 
 func (c *Client) Subscribe(ch string, cb func(*Data)) error {
 	c.Debugf("Subscribing: %s", ch)
-	c.subs[ch] = cb
-	return c.request(&api.Request{
-		Payload: &api.Request_Subscribe{
-			Subscribe: &api.Subscribe{
-				Channel: ch,
-			},
-		},
-	})
-}
-
-func (c *Client) Unsubscribe(ch string) error {
-	c.Debugf("Unsubscribing: %s", ch)
-	return c.request(&api.Request{
-		Payload: &api.Request_Unsubscribe{
-			Unsubscribe: &api.Unsubscribe{
-				Channel: ch,
-			},
-		},
-	})
-}
-
-func (c *Client) request(req *api.Request) error {
-	u, err := uuid.NewRandom()
-	if err != nil {
-		c.Errorf("Failed to create UUID: %s", err.Error())
-		return err
-	}
-	id := hex.EncodeToString(u[:])
-	req.Id = id
-	c.Debugf("Making request: %s", id)
-	resCh := make(chan error, 1)
-	c.reqs[id] = resCh
-	err = c.writer.write(&api.Message{
-		Payload: &api.Message_Control{
-			Control: &api.Control{
-				Payload: &api.Control_Request{Request: req},
-			},
-		},
-	})
+	stream, err := api.NewPubSubClient(c.conn).Subscribe(context.Background(), &api.SubscribeRequest{Channel: ch})
 	if err != nil {
 		return err
 	}
-	t := time.NewTimer(RequestTimeout)
-	select {
-	case <-t.C:
-		err = fmt.Errorf("Request timed out: %s", id)
-		c.Error(err.Error())
-	case err = <-resCh:
-		t.Stop()
-		c.Debugf("Received response: %s", id)
-	}
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (c *Client) loop(conn *websocket.Conn) {
-	defer c.Debugf("Exiting reader: %s", c.localAddr.String())
-	defer c.Close()
 	for {
-		c.Debugf("Receiving websocket message: %s", c.localAddr.String())
-		mt, p, err := conn.ReadMessage()
+		res, err := stream.Recv()
 		if err != nil {
-			if !c.closed {
-				c.Errorf("Failed to read: %s", err.Error())
-			}
-			return
-		}
-		switch mt {
-		case websocket.BinaryMessage:
-			c.Debugf("Received %d bytes websocket binary message: %s", len(p), c.localAddr.String())
-			msg := &api.Message{}
-			err := proto.Unmarshal(p, msg)
-			if err != nil {
-				c.Errorf("Failed to parse proto message: %s", err.Error())
-				return
-			}
-			err = c.handle(msg)
-			if err != nil {
-				return
-			}
-		default:
-			c.Errorf("Unexpected websocket message type %d from %s", mt, c.localAddr.String())
-			return
-		}
-	}
-}
-
-func (c *Client) handle(msg *api.Message) error {
-	switch v := msg.Payload.(type) {
-	case *api.Message_Control:
-		ctl := v.Control
-		switch v := ctl.Payload.(type) {
-		case *api.Control_Request:
-			err := fmt.Errorf("Unexpected payload of Request")
-			c.Errorf(err.Error())
-			return err
-		case *api.Control_Response:
-			res := v.Response
-			id := res.GetId()
-			if id == "" {
-				err := fmt.Errorf("Missing request ID")
-				c.Errorf("%s", err.Error())
-				return err
-			}
-			req := c.reqs[id]
-			if req == nil {
-				err := fmt.Errorf("No such request: %s", id)
-				c.Errorf("%s", err.Error())
-				return err
-			}
-			switch v := res.Payload.(type) {
-			case *api.Response_Success:
-				c.Debugf("Request success: %s", id)
-				req <- nil
-			case *api.Response_Error:
-				e := v.Error
-				err := fmt.Errorf("%d %s", e.GetCode(), e.GetReason())
-				c.Debugf("Request failed: %s", err.Error())
-				req <- err
-			default:
-				err := fmt.Errorf("Unexpected type of Response: %v", v)
-				c.Errorf(err.Error())
-				return err
-			}
-		default:
-			err := fmt.Errorf("Unexpected type of Control: %v", v)
-			c.Errorf(err.Error())
 			return err
 		}
-	case *api.Message_Data:
-		data := v.Data
-		ch := data.GetChannel()
-		sub := c.subs[ch]
-		if sub == nil {
-			err := fmt.Errorf("Not subscribed: %s", ch)
+		data := &api.Data{
+			Channel: ch,
+		}
+		switch v := res.Type.(type) {
+		case *api.SubscribeResponse_Text:
+			data.Type = &api.Data_Text{Text: v.Text}
+		case *api.SubscribeResponse_Binary:
+			data.Type = &api.Data_Binary{Binary: v.Binary}
+		default:
+			err = fmt.Errorf("Unknown type of subscribe response: %v", v)
 			c.Errorf("%s", err.Error())
 			return err
 		}
-		switch v := data.Payload.(type) {
-		case *api.Data_Text:
-			txt := v.Text
-			c.Debugf("Dispatching %d bytes text data from: %s", len(txt), ch)
-		case *api.Data_Binary:
-			bin := v.Binary
-			c.Debugf("Dispatching %d bytes binary data from: %s", len(bin), ch)
-		default:
-			err := fmt.Errorf("Unexpected type of Data: %v", v)
-			c.Errorf(err.Error())
-			return err
-		}
-		go sub(&Data{data})
-	default:
-		err := fmt.Errorf("Unexpected type of Message: %v", v)
-		c.Errorf(err.Error())
-		return err
 	}
-	return nil
 }

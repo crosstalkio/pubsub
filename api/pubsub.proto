@@ -1,0 +1,44 @@
+syntax = "proto3";
+package io.crosstalk.pubsub.api;
+option java_multiple_files = true;
+option go_package = "api";
+
+message Data {
+    int64 nano_time = 1;
+    string channel = 2;
+    string from = 3;
+    oneof type {
+        string text = 4;
+        bytes binary = 5;
+    }
+}
+
+message PublishRequest {
+    string channel = 1;
+    oneof type {
+        string text = 2;
+        bytes binary = 3;
+    }
+}
+
+message PublishResponse {
+}
+
+message SubscribeRequest {
+    string channel = 1;
+}
+
+message SubscribeResponse {
+    int64 nano_time = 1;
+    string channel = 2;
+    string from = 3;
+    oneof type {
+        string text = 4;
+        bytes binary = 5;
+    }
+}
+
+service PubSub {
+    rpc Publish(PublishRequest) returns (PublishResponse) {}
+    rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse) {}
+}
