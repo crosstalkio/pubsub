@@ -130,6 +130,7 @@ func (s *Server) Subscribe(req *api.SubscribeRequest, stream api.PubSub_Subscrib
 	defer func() {
 		sub.Close()
 	}()
+	s.Debugf("Subscribing: %s => %s", req.Channel, addr.String())
 	for {
 		data, err := sub.Receive()
 		if err != nil {
@@ -161,7 +162,7 @@ func (s *Server) Subscribe(req *api.SubscribeRequest, stream api.PubSub_Subscrib
 			s.Errorf("%s", err.Error())
 			return err
 		}
-		s.Debugf("Dispatching received message to %s => %s", addr.String(), req.Channel)
+		s.Debugf("Dispatching received message: %s => %s", req.Channel, addr.String())
 		err = stream.Send(res)
 		if err != nil {
 			s.Errorf("Failed to dispatch message: %s", err.Error())
