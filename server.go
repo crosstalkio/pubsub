@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/crosstalkio/log"
-	api "github.com/crosstalkio/pubsub/api/pubsub"
+	"github.com/crosstalkio/pubsub/api"
 	"github.com/gorilla/websocket"
 	"github.com/mb0/glob"
 	"google.golang.org/protobuf/proto"
@@ -82,7 +82,7 @@ func (s *Server) Loop() {
 				s.Errorf("Failed to parse proto message: %s", err.Error())
 				return
 			}
-			msg, err = s.handle(msg)
+			msg, err = s.process(msg)
 			if err != nil {
 				return
 			}
@@ -99,11 +99,11 @@ func (s *Server) Loop() {
 	}
 }
 
-func (s *Server) handle(msg *api.Message) (*api.Message, error) {
-	switch v := msg.Payload.(type) {
+func (s *Server) process(msg *api.Message) (*api.Message, error) {
+	switch v := msg.Type.(type) {
 	case *api.Message_Control:
 		ctl := v.Control
-		switch v := ctl.Payload.(type) {
+		switch v := ctl.Type.(type) {
 		case *api.Control_Request:
 			req := v.Request
 			rid := req.GetId()
@@ -112,22 +112,19 @@ func (s *Server) handle(msg *api.Message) (*api.Message, error) {
 				s.Errorf(err.Error())
 				return nil, err
 			}
-			s.Debugf("Handling request %s from %s", rid, s.remoteAddr.String())
-			switch v := req.Payload.(type) {
-			case *api.Request_Publish:
-				pub := v.Publish
-				return s.publish(rid, pub)
-			case *api.Request_Subscribe:
-				sub := v.Subscribe
-				return s.subscribe(rid, sub.GetChannel())
-			case *api.Request_Unsubscribe:
-				uns := v.Unsubscribe
-				return s.unsubscribe(rid, uns.GetChannel())
-			default:
-				err := fmt.Errorf("Unexpected type of Request: %v", ctl)
-				s.Errorf(err.Error())
+			res, err := s.handle(rid, req)
+			if err != nil {
 				return nil, err
 			}
+			return &api.Message{
+				Type: &api.Message_Control{
+					Control: &api.Control{
+						Type: &api.Control_Response{
+							Response: res,
+						},
+					},
+				},
+			}, nil
 		default:
 			err := fmt.Errorf("Unexpected type of Control: %v", ctl)
 			s.Errorf(err.Error())
@@ -140,7 +137,26 @@ func (s *Server) handle(msg *api.Message) (*api.Message, error) {
 	}
 }
 
-func (s *Server) subscribe(id, ch string) (*api.Message, error) {
+func (s *Server) handle(rid string, req *api.Request) (*api.Response, error) {
+	s.Debugf("Handling request %s from %s", rid, s.remoteAddr.String())
+	switch v := req.Type.(type) {
+	case *api.Request_Publish:
+		pub := v.Publish
+		return s.publish(rid, pub)
+	case *api.Request_Subscribe:
+		sub := v.Subscribe
+		return s.subscribe(rid, sub.GetChannel())
+	case *api.Request_Unsubscribe:
+		uns := v.Unsubscribe
+		return s.unsubscribe(rid, uns.GetChannel())
+	default:
+		err := fmt.Errorf("Unexpected type of Request: %v", req)
+		s.Errorf(err.Error())
+		return nil, err
+	}
+}
+
+func (s *Server) subscribe(id, ch string) (*api.Response, error) {
 	if id == "" {
 		return s.error(id, 400, "Missing request ID"), nil
 	}
@@ -198,12 +214,12 @@ func (s *Server) subscribe(id, ch string) (*api.Message, error) {
 				continue
 			}
 			pmsg := &api.Message{
-				Payload: &api.Message_Data{
+				Type: &api.Message_Data{
 					Data: &api.Data{
 						NanoTime: msg.GetNanoTime(),
 						Channel:  ch,
 						From:     from,
-						Payload:  msg.GetPayload(),
+						Type:     msg.GetType(),
 					},
 				},
 			}
@@ -218,7 +234,7 @@ func (s *Server) subscribe(id, ch string) (*api.Message, error) {
 	return s.success(id), nil
 }
 
-func (s *Server) unsubscribe(id, ch string) (*api.Message, error) {
+func (s *Server) unsubscribe(id, ch string) (*api.Response, error) {
 	if id == "" {
 		return s.error(id, 400, "Missing request ID"), nil
 	}
@@ -239,27 +255,27 @@ func (s *Server) unsubscribe(id, ch string) (*api.Message, error) {
 	}
 }
 
-func (s *Server) publish(id string, pub *api.Publish) (*api.Message, error) {
+func (s *Server) publish(id string, pub *api.Publish) (*api.Response, error) {
 	if id == "" {
 		return s.error(id, 400, "Missing request ID"), nil
 	}
 	if pub.Channel == "" {
 		return s.error(id, 400, "Missing channel to publish"), nil
 	}
-	if pub.Payload == nil {
-		return s.error(id, 400, "Missing payload to publish"), nil
+	if pub.Type == nil {
+		return s.error(id, 400, "Missing type to publish"), nil
 	}
 	msg := &api.Data{
 		NanoTime: time.Now().UnixNano(),
 		From:     s.Identity,
 	}
-	switch v := pub.GetPayload().(type) {
+	switch v := pub.GetType().(type) {
 	case *api.Publish_Text:
 		s.Debugf("Publishing %d bytes of text data from '%s': %s", len(v.Text), msg.From, s.remoteAddr.String())
-		msg.Payload = &api.Data_Text{Text: v.Text}
+		msg.Type = &api.Data_Text{Text: v.Text}
 	case *api.Publish_Binary:
 		s.Debugf("Publishing %d bytes of binary data from '%s': %s", len(v.Binary), msg.From, s.remoteAddr.String())
-		msg.Payload = &api.Data_Binary{Binary: v.Binary}
+		msg.Type = &api.Data_Binary{Binary: v.Binary}
 	default:
 		err := fmt.Errorf("Unexpected type of Payload: %v", v)
 		s.Errorf(err.Error())
@@ -312,39 +328,23 @@ func (s *Server) send(msg *api.Message) error {
 	return nil
 }
 
-func (s *Server) control(ctl *api.Control) *api.Message {
-	return &api.Message{
-		Payload: &api.Message_Control{
-			Control: ctl,
+func (s *Server) success(id string) *api.Response {
+	return &api.Response{
+		Id: id,
+		Type: &api.Response_Success{
+			Success: &api.Success{},
 		},
 	}
 }
 
-func (s *Server) success(id string) *api.Message {
-	return s.control(&api.Control{
-		Payload: &api.Control_Response{
-			Response: &api.Response{
-				Id: id,
-				Payload: &api.Response_Success{
-					Success: &api.Success{},
-				},
+func (s *Server) error(id string, code int32, msg string, args ...interface{}) *api.Response {
+	return &api.Response{
+		Id: id,
+		Type: &api.Response_Error{
+			Error: &api.Error{
+				Code:   code,
+				Reason: fmt.Sprintf(msg, args...),
 			},
 		},
-	})
-}
-
-func (s *Server) error(id string, code int32, msg string, args ...interface{}) *api.Message {
-	return s.control(&api.Control{
-		Payload: &api.Control_Response{
-			Response: &api.Response{
-				Id: id,
-				Payload: &api.Response_Error{
-					Error: &api.Error{
-						Code:   code,
-						Reason: fmt.Sprintf(msg, args...),
-					},
-				},
-			},
-		},
-	})
+	}
 }
