@@ -37,29 +37,33 @@ type Client struct {
 	cancels  map[string]context.CancelFunc
 }
 
-func NewClient(logger log.Logger, addr string, timeout time.Duration) (*Client, error) {
+func NewClient(logger log.Logger, timeout time.Duration) *Client {
 	s := log.NewSugar(logger)
+	return &Client{
+		Sugar:    s,
+		timeout:  timeout,
+		metadata: make(metadata.MD),
+		cancels:  make(map[string]context.CancelFunc),
+	}
+}
+
+func (c *Client) Dial(addr string, opts ...grpc.DialOption) error {
 	ctx, cancel := context.WithCancel(context.Background())
-	timer := time.NewTimer(timeout)
+	timer := time.NewTimer(c.timeout)
 	go func() {
 		<-timer.C
-		s.Errorf("Dial timed out: %v", timeout)
+		c.Errorf("Dial timed out: %v", c.timeout)
 		cancel()
 	}()
 	conn, err := grpc.DialContext(ctx, addr, grpc.WithInsecure(), grpc.WithBlock())
 	if err != nil {
 		cancel()
-		return nil, err
+		return err
 	}
 	timer.Stop()
-	return &Client{
-		Sugar:    s,
-		conn:     conn,
-		cancel:   cancel,
-		timeout:  timeout,
-		metadata: make(metadata.MD),
-		cancels:  make(map[string]context.CancelFunc),
-	}, nil
+	c.cancel = cancel
+	c.conn = conn
+	return nil
 }
 
 func (c *Client) Close() error {
