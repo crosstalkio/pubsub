@@ -1,7 +1,7 @@
 syntax = "proto3";
 package io.crosstalk.pubsub.api;
 option java_multiple_files = true;
-option go_package = "api;api";
+option go_package = "api/pubsub;pubsub";
 
 message Message {
     oneof type {

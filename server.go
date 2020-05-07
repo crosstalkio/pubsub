@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/crosstalkio/log"
-	"github.com/crosstalkio/pubsub/api"
+	api "github.com/crosstalkio/pubsub/api/pubsub"
 	"github.com/gorilla/websocket"
 	"github.com/mb0/glob"
 	"google.golang.org/protobuf/proto"

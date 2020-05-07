@@ -2,7 +2,7 @@ package pubsub
 
 import (
 	"github.com/crosstalkio/log"
-	"github.com/crosstalkio/pubsub/api"
+	api "github.com/crosstalkio/pubsub/api/pubsub"
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
 )
