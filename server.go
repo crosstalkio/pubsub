@@ -265,22 +265,6 @@ func (s *Server) publish(id string, pub *api.Publish) (*api.Response, error) {
 	if pub.Type == nil {
 		return s.error(id, 400, "Missing type to publish"), nil
 	}
-	msg := &api.Data{
-		NanoTime: time.Now().UnixNano(),
-		From:     s.Identity,
-	}
-	switch v := pub.GetType().(type) {
-	case *api.Publish_Text:
-		s.Debugf("Publishing %d bytes of text data from '%s': %s", len(v.Text), msg.From, s.remoteAddr.String())
-		msg.Type = &api.Data_Text{Text: v.Text}
-	case *api.Publish_Binary:
-		s.Debugf("Publishing %d bytes of binary data from '%s': %s", len(v.Binary), msg.From, s.remoteAddr.String())
-		msg.Type = &api.Data_Binary{Binary: v.Binary}
-	default:
-		err := fmt.Errorf("Unexpected type of Payload: %v", v)
-		s.Errorf(err.Error())
-		return nil, err
-	}
 	if s.perm != nil {
 		authz := false
 		s.Debugf("Checking publish permission: %s vs %v", pub.Channel, s.perm.Write)
@@ -301,12 +285,19 @@ func (s *Server) publish(id string, pub *api.Publish) (*api.Response, error) {
 			return s.error(id, 401, msg), nil
 		}
 	}
-	data, err := proto.Marshal(msg)
-	if err != nil {
-		s.Errorf("Failed to marshal payload for backbone: %s", err.Error)
+	var err error
+	switch v := pub.GetType().(type) {
+	case *api.Publish_Text:
+		s.Debugf("Publishing %d bytes of text data from '%s': %s", len(v.Text), s.Identity, s.remoteAddr.String())
+		err = PublishText(s.backbone, pub.Channel, s.Identity, time.Now(), v.Text)
+	case *api.Publish_Binary:
+		s.Debugf("Publishing %d bytes of binary data from '%s': %s", len(v.Binary), s.Identity, s.remoteAddr.String())
+		err = PublishBinary(s.backbone, pub.Channel, s.Identity, time.Now(), v.Binary)
+	default:
+		err := fmt.Errorf("Unexpected type of Payload: %v", v)
+		s.Errorf(err.Error())
 		return nil, err
 	}
-	err = s.backbone.Publish(pub.Channel, data)
 	if err != nil {
 		s.Errorf("Failed to publish to backbone: %s", err.Error())
 		return s.error(id, 500, "%s", err.Error()), nil
